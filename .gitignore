@@ -1,0 +1,5 @@
+pcb*/*.b#*
+pcb*/*.s#*
+Debug
+.settings
+*.launch
