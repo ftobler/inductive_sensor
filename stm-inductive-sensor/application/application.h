@@ -10,5 +10,7 @@
 
 void application_init();
 void appliation_loop();
+void application_dma_complete_isr();
+void application_timer_isr();
 
 #endif /* APPLICATION_H_ */
