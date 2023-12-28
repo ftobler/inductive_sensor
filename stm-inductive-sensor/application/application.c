@@ -18,7 +18,7 @@ extern TIM_HandleTypeDef htim17;
 extern TIM_HandleTypeDef htim1;
 extern UART_HandleTypeDef huart1;
 
-#define DATASIZE 900
+#define DATASIZE 1300  //maximize this. RAM amount and processing power is the limiting factor
 #define DATAWIDTH 2
 static uint16_t dma_buf[DATASIZE*DATAWIDTH];
 static uint32_t dma_finish = 0;
@@ -92,7 +92,7 @@ void main_task() {
 	htim17.Instance->CCR1 = htim17.Instance->ARR / 2;
 	//delay so the DC goes away
 	volatile uint16_t i;
-	i = 2500; while (i--);
+	i = 300; while (i--);
 
 
 	//configure ADC channels to capture
@@ -124,7 +124,7 @@ void main_task() {
 	//start the timer to generate PWM for the TX coil
 	htim17.Instance->CCR1 = htim17.Instance->ARR / 2;
 	//delay so the DC goes away
-	i = 2500; while (i--);
+	i = 300; while (i--);
 
 	//configure ADC channels to capture
 	sConfig.Channel = ADC_CHANNEL_3;
@@ -157,10 +157,17 @@ void main_task() {
 
 	//wait for next conversion
 	//HAL_Delay(5);
-	htim1.Instance->CCR1 = app.distance_filter * 10;
+	int ticks = app.distance_filter * 100;
+	if (ticks < 10) {
+		ticks = 10;
+	}
+	if (ticks > 40000) {
+		ticks = 40000;
+	}
+	htim1.Instance->CCR1 = ticks;
 
 	static uint16_t distance = 0;
-	distance = app.distance_filter;
+	distance = app.distance_filter * 10;
 	HAL_UART_Transmit_DMA(&huart1, (uint8_t*)&distance, sizeof(distance));
 }
 
@@ -192,26 +199,24 @@ void application_timer_isr() {
 float coupling_cal_sin = 0.0f;   //to cancel out signal bleed in from TX
 float coupling_cal_cos = 0.009f; //to cancel out signal bleed in from TX
 
+
 __attribute__((optimize("-O3")))
 static void process_data_sin() {
 
-	float avg_sin = 0.0f;
 	float avg_tx = 0.0f;
-
 	float sum_sin = 0.0f;
-
 	const int n = DATASIZE;
 
+	//need to get rid of DC in the LO/TX channel
+	//the sin channel is allowed to have DC
 	for (int i = 0; i < n; i++) {
-		avg_sin += get_sin(i);
 		avg_tx  += get_tx(i);
 	}
-	avg_sin = avg_sin / n;
 	avg_tx  = avg_tx  / n;
 
 	for (int i = 0; i < n; i++) {
 		float tx_hp  = get_tx(i)  - avg_tx;
-		float sin_hp = get_sin(i) - avg_sin + tx_hp * coupling_cal_sin;
+		float sin_hp = get_sin(i) + tx_hp * coupling_cal_sin;
 		sum_sin = sum_sin + sin_hp * tx_hp;
 	}
 	app.sin = sum_sin / n / 4096;
@@ -221,23 +226,20 @@ static void process_data_sin() {
 __attribute__((optimize("-O3")))
 static void process_data_cos() {
 
-	float avg_cos = 0.0f;
 	float avg_tx = 0.0f;
-
 	float sum_cos = 0.0f;
-
 	const int n = DATASIZE;
 
+	//need to get rid of DC in the LO/TX channel
+	//the cos channel is allowed to have DC
 	for (int i = 0; i < n; i++) {
-		avg_cos += get_cos(i);
 		avg_tx  += get_tx(i);
 	}
-	avg_cos = avg_cos / n;
 	avg_tx  = avg_tx  / n;
 
 	for (int i = 0; i < n; i++) {
 		float tx_hp  = get_tx(i)  - avg_tx;
-		float cos_hp = get_cos(i) - avg_cos + tx_hp * coupling_cal_cos;
+		float cos_hp = get_cos(i) + tx_hp * coupling_cal_cos;
 		sum_cos = sum_cos + cos_hp * tx_hp;
 	}
 	app.cos = sum_cos / n / 4096;
@@ -249,14 +251,22 @@ static void process_data_final() {
 	float angle_old = app.angle;
 	app.angle = atan2(app.sin, app.cos);
 	float angle_diff = app.angle - angle_old;
-	if (angle_diff > 2.0f && app.n > 0) {
+	if (angle_diff > 3.14159f && app.n > 0) {
 		app.n--;
 	}
-	if (angle_diff < -2.0f && app.n < 4) {
+	if (angle_diff < -3.14159f && app.n < 4) {
 		app.n++;
 	}
-	app.distance = ((app.angle  / 2.0f / 3.14159f) + app.n) * 80.0f;
-	app.distance_filter = app.distance_filter * 0.25f + app.distance * 0.75f;
+	float distance = ((app.angle  / 2.0f / 3.14159f) + app.n) * 80.0f;
+	if (distance > 320.0f) {
+		distance = 320.0f;
+	}
+	if (distance < 0.0f) {
+		distance = 0.0f;
+	}
+	app.distance = distance;
+
+	app.distance_filter = app.distance_filter * 0.125f + app.distance * 0.875f;
 
 	app.amplitude = sqrtf(app.sin*app.sin + app.cos*app.cos);
 }
