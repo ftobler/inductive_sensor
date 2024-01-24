@@ -25,10 +25,22 @@ static uint32_t dma_finish = 0;
 static uint32_t task_start = 0;
 
 
+//calibration to cancel out interference on the PCB by digitally mixing the TX signal in the receive paths.
+//it no metal is near the sensor strip, the app.sin and app.cos variables should hover around 0.
+//for ARR=512
+static float coupling_cal_sin = -0.0079f; //to cancel out signal bleed in from TX
+static float coupling_cal_cos =  0.1511f; //to cancel out signal bleed in from TX
+static uint32_t coupling_auto_cal = 0;  //set 1 to execute. execute without metal near strip
+
+static uint32_t frequency_auto_cal = 0;  //set 1 to execute. put metal on strip
+
+
 static void main_task();
 static void process_data_sin();
 static void process_data_cos();
 static void process_data_final();
+static void coupling_auto_cal_fn();
+static void frequency_auto_cal_fn();
 
 typedef struct {
 	float sin;
@@ -53,7 +65,7 @@ void application_init() {
 	//the PWM is always active, but set to 0 for no output
     HAL_TIM_PWM_Start(&htim17, TIM_CHANNEL_1);
 	htim17.Instance->CCR1 = 0; //capture compare (PWM value) / off - will be set to 50% of ARR when ON.
-	htim17.Instance->ARR = 512; //auto reload register / this sets the TX frequency
+	htim17.Instance->ARR = 440; //auto reload register / this sets the TX frequency
 
 	//calibrate the ADC
 	//the adc is configured with DMA and set to 2 channel scan.
@@ -67,6 +79,14 @@ void appliation_loop() {
 	if (task_start) {
 		task_start = 0;
 		main_task();
+
+		if (coupling_auto_cal) {
+			coupling_auto_cal_fn();
+		}
+
+		if (frequency_auto_cal) {
+			frequency_auto_cal_fn();
+		}
 	}
 }
 
@@ -193,11 +213,6 @@ void application_timer_isr() {
 #define get_cos(x) (dma_buf[(x)*DATAWIDTH+1])
 #define get_tx(x)  (dma_buf[(x)*DATAWIDTH+0])
 
-//calibration to cancel out interference on the PCB by digitally mixing the TX signal in the receive paths.
-//it no metal is near the sensor strip, the app.sin and app.cos variables should hover around 0.
-//for ARR=512
-float coupling_cal_sin = 0.0f;   //to cancel out signal bleed in from TX
-float coupling_cal_cos = 0.009f; //to cancel out signal bleed in from TX
 
 
 __attribute__((optimize("-O3")))
@@ -269,6 +284,106 @@ static void process_data_final() {
 	app.distance_filter = app.distance_filter * 0.125f + app.distance * 0.875f;
 
 	app.amplitude = sqrtf(app.sin*app.sin + app.cos*app.cos);
+}
+
+
+static void coupling_auto_cal_fn() {
+	static uint32_t n = 0;
+
+	switch (coupling_auto_cal) {
+	case 1:
+		n = 0;
+		coupling_cal_sin = 0.0f;
+		coupling_cal_cos = 0.0f;
+		coupling_auto_cal = 2;
+		break;
+	case 2:
+		if (app.sin > 0.0f) {
+			coupling_cal_sin -= 0.01f;
+		} else {
+			coupling_cal_sin += 0.01f;
+		}
+		if (app.cos > 0.0f) {
+			coupling_cal_cos -= 0.01f;
+		} else {
+			coupling_cal_cos += 0.01f;
+		}
+		n++;
+		if (n > 60) {
+			coupling_auto_cal = 3;
+			n = 0;
+		}
+		break;
+	case 3:
+		if (app.sin > 0.0f) {
+			coupling_cal_sin -= 0.001f;
+		} else {
+			coupling_cal_sin += 0.001f;
+		}
+		if (app.cos > 0.0f) {
+			coupling_cal_cos -= 0.001f;
+		} else {
+			coupling_cal_cos += 0.001f;
+		}
+		n++;
+		if (n > 30) {
+			coupling_auto_cal = 4;
+			n = 0;
+		}
+		break;
+	case 4:
+		if (app.sin > 0.0f) {
+			coupling_cal_sin -= 0.0001f;
+		} else {
+			coupling_cal_sin += 0.0001f;
+		}
+		if (app.cos > 0.0f) {
+			coupling_cal_cos -= 0.0001f;
+		} else {
+			coupling_cal_cos += 0.0001f;
+		}
+		n++;
+		if (n > 30) {
+			coupling_auto_cal = 0;
+		}
+		break;
+	}
+
+}
+
+static void frequency_auto_cal_fn() {
+	static uint32_t n = 0;
+	static uint32_t n_biggest = 0;
+	static float val_biggest = 0.0f;
+
+
+	if (frequency_auto_cal == 1) {
+		//initial
+		n = 0;
+		val_biggest = 0;
+		n_biggest = 0;
+		htim17.Instance->ARR = n + 300;
+		frequency_auto_cal = 2;
+	} else if (frequency_auto_cal == 3) {
+		frequency_auto_cal = 0;
+		htim17.Instance->ARR = n_biggest + 300;
+	} else {
+		float abssq = app.sin*app.sin + app.cos*app.cos;
+		if (abssq > val_biggest) {
+			n_biggest = n;
+			val_biggest = abssq;
+		}
+
+
+		n++;
+		htim17.Instance->ARR = n + 300;
+
+		if (n > 300) {
+			frequency_auto_cal = 3;
+		}
+	}
+
+
 }
 
 
